@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'services/conversation_service.dart';
+import 'services/api_key_service.dart';
 import 'adapters/test_adapter.dart';
 import 'adapters/grok_adapter.dart';
 
@@ -39,15 +40,60 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final TextEditingController _apiKeyController = TextEditingController();
   late ConversationService _conversationService;
   bool _showApiKeyInput = false;
+  bool _isInitializing = true;
 
   @override
   void initState() {
     super.initState();
-    // Initialize with test adapter
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _conversationService = Provider.of<ConversationService>(context, listen: false);
-      _conversationService.setAdapter(TestAdapter());
-    });
+    _initializeApp();
+  }
+
+  /// Initialize the app by loading saved preferences and API keys
+  Future<void> _initializeApp() async {
+    _conversationService = Provider.of<ConversationService>(context, listen: false);
+
+    try {
+      // Check what adapter was used last time
+      final lastAdapter = await ApiKeyService.getLastAdapter();
+
+      if (lastAdapter == 'grok') {
+        // Try to restore Grok connection
+        final savedApiKey = await ApiKeyService.getGrokApiKey();
+        if (savedApiKey != null && savedApiKey.isNotEmpty) {
+          await _conversationService.setAdapter(GrokAdapter(apiKey: savedApiKey));
+          if (mounted) {
+            // Show success message after a brief delay to ensure UI is ready
+            Future.delayed(const Duration(milliseconds: 500), () {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: const Text('Grok connection restored!'),
+                    backgroundColor: Colors.green.shade600,
+                    behavior: SnackBarBehavior.floating,
+                    margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
+                  ),
+                );
+              }
+            });
+          }
+        } else {
+          // Fallback to test adapter
+          await _conversationService.setAdapter(TestAdapter());
+        }
+      } else {
+        // Default to test adapter
+        await _conversationService.setAdapter(TestAdapter());
+      }
+    } catch (e) {
+      // Fallback to test adapter on any error
+      await _conversationService.setAdapter(TestAdapter());
+    }
+
+    if (mounted) {
+      setState(() {
+        _isInitializing = false;
+      });
+    }
   }
 
   @override
@@ -68,31 +114,139 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void _toggleApiKeyInput() {
     setState(() {
       _showApiKeyInput = !_showApiKeyInput;
+      // Pre-fill with existing key if available
+      if (_showApiKeyInput) {
+        _loadExistingApiKey();
+      }
     });
   }
 
-  void _setGrokAdapter() {
-    final apiKey = _apiKeyController.text.trim();
-    if (apiKey.isNotEmpty) {
-      _conversationService.setAdapter(GrokAdapter(apiKey: apiKey));
-      setState(() {
-        _showApiKeyInput = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Grok adapter configured!')),
-      );
+  Future<void> _loadExistingApiKey() async {
+    final existingKey = await ApiKeyService.getGrokApiKey();
+    if (existingKey != null) {
+      _apiKeyController.text = existingKey;
     }
   }
 
-  void _setTestAdapter() {
-    _conversationService.setAdapter(TestAdapter());
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Test adapter active')),
+  Future<void> _setGrokAdapter() async {
+    final apiKey = _apiKeyController.text.trim();
+    if (apiKey.isNotEmpty) {
+      try {
+        // Save the API key securely
+        await ApiKeyService.saveGrokApiKey(apiKey);
+        await ApiKeyService.saveLastAdapter('grok');
+
+        // Set the adapter
+        await _conversationService.setAdapter(GrokAdapter(apiKey: apiKey));
+
+        setState(() {
+          _showApiKeyInput = false;
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Grok adapter configured and saved!')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to save Grok settings: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _setTestAdapter() async {
+    try {
+      await ApiKeyService.saveLastAdapter('test');
+      await _conversationService.setAdapter(TestAdapter());
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Test adapter active')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to switch to test adapter: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _clearConversationWithConfirmation() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Clear Conversation'),
+          content: const Text(
+            'Are you sure you want to delete all messages? This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Delete All'),
+            ),
+          ],
+        );
+      },
     );
+
+    if (confirmed == true) {
+      await _conversationService.clearConversation();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Conversation cleared')),
+        );
+      }
+    }
+  }
+
+  Future<void> _clearApiKeys() async {
+    try {
+      await ApiKeyService.clearAll();
+      await _conversationService.setAdapter(TestAdapter());
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('All API keys cleared')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to clear API keys: $e')),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isInitializing) {
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Initializing Morfork...'),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
@@ -107,6 +261,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 case 'test':
                   _setTestAdapter();
                   break;
+                case 'clear_conversation':
+                  _clearConversationWithConfirmation();
+                  break;
+                case 'clear_keys':
+                  _clearApiKeys();
+                  break;
               }
             },
             itemBuilder: (context) => [
@@ -116,7 +276,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   children: [
                     Icon(Icons.psychology),
                     SizedBox(width: 8),
-                    Text('Use Grok AI'),
+                    Text('Configure Grok AI'),
                   ],
                 ),
               ),
@@ -127,6 +287,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     Icon(Icons.science),
                     SizedBox(width: 8),
                     Text('Use Test Adapter'),
+                  ],
+                ),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'clear_conversation',
+                child: Row(
+                  children: [
+                    Icon(Icons.clear_all, color: Colors.orange),
+                    SizedBox(width: 8),
+                    Text('Clear Conversation', style: TextStyle(color: Colors.orange)),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'clear_keys',
+                child: Row(
+                  children: [
+                    Icon(Icons.delete_forever, color: Colors.red),
+                    SizedBox(width: 8),
+                    Text('Clear All API Keys', style: TextStyle(color: Colors.red)),
                   ],
                 ),
               ),
@@ -287,11 +468,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         onPressed: service.isProcessing ? null : _sendMessage,
                         icon: const Icon(Icons.send),
                       ),
-                      IconButton(
-                        onPressed: service.clearConversation,
-                        icon: const Icon(Icons.clear),
-                        tooltip: 'Clear conversation',
-                      ),
                     ],
                   ),
                 ),
@@ -303,7 +479,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 }
-
 
 class MessageBubble extends StatelessWidget {
   final ConversationMessage message;
@@ -323,7 +498,7 @@ class MessageBubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: message.isUser
               ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.surfaceVariant,
+              : Theme.of(context).colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(16.0),
         ),
         child: Column(
@@ -334,7 +509,7 @@ class MessageBubble extends StatelessWidget {
               style: TextStyle(
                 color: message.isUser
                     ? Theme.of(context).colorScheme.onPrimary
-                    : Theme.of(context).colorScheme.onSurfaceVariant,
+                    : Theme.of(context).colorScheme.onSurface,
               ),
             ),
             const SizedBox(height: 4),
@@ -343,8 +518,8 @@ class MessageBubble extends StatelessWidget {
               style: TextStyle(
                 fontSize: 12,
                 color: message.isUser
-                    ? Theme.of(context).colorScheme.onPrimary.withOpacity(0.7)
-                    : Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.7),
+                    ? Theme.of(context).colorScheme.onPrimary.withValues(alpha: 0.7)
+                    : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
               ),
             ),
           ],
