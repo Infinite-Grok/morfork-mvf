@@ -45,10 +45,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     super.initState();
     // Initialize with test adapter
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _conversationService = Provider.of<ConversationService>(
-        context,
-        listen: false,
-      );
+      _conversationService = Provider.of<ConversationService>(context, listen: false);
       _conversationService.setAdapter(TestAdapter());
     });
   }
@@ -81,17 +78,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
       setState(() {
         _showApiKeyInput = false;
       });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Grok adapter configured!')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Grok adapter configured!')),
+      );
     }
   }
 
   void _setTestAdapter() {
     _conversationService.setAdapter(TestAdapter());
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Test adapter active')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Test adapter active')),
+    );
   }
 
   @override
@@ -112,29 +109,28 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   break;
               }
             },
-            itemBuilder:
-                (context) => [
-                  const PopupMenuItem(
-                    value: 'grok',
-                    child: Row(
-                      children: [
-                        Icon(Icons.psychology),
-                        SizedBox(width: 8),
-                        Text('Use Grok AI'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'test',
-                    child: Row(
-                      children: [
-                        Icon(Icons.science),
-                        SizedBox(width: 8),
-                        Text('Use Test Adapter'),
-                      ],
-                    ),
-                  ),
-                ],
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'grok',
+                child: Row(
+                  children: [
+                    Icon(Icons.psychology),
+                    SizedBox(width: 8),
+                    Text('Use Grok AI'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'test',
+                child: Row(
+                  children: [
+                    Icon(Icons.science),
+                    SizedBox(width: 8),
+                    Text('Use Test Adapter'),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -146,20 +142,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(8.0),
-                color:
-                    service.currentAdapter?.isAvailable == true
-                        ? Colors.green.shade100
-                        : Colors.red.shade100,
+                color: service.currentAdapter?.isAvailable == true
+                    ? Colors.green.shade100
+                    : Colors.red.shade100,
                 child: Text(
                   service.currentAdapter != null
                       ? 'Connected: ${service.currentAdapter!.name}'
                       : 'No adapter connected',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color:
-                        service.currentAdapter?.isAvailable == true
-                            ? Colors.green.shade800
-                            : Colors.red.shade800,
+                    color: service.currentAdapter?.isAvailable == true
+                        ? Colors.green.shade800
+                        : Colors.red.shade800,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
@@ -213,22 +207,33 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
               // Messages list
               Expanded(
-                child:
-                    service.messages.isEmpty
-                        ? const Center(
-                          child: Text(
-                            'Send a message to test the AI adapter!',
-                            style: TextStyle(fontSize: 16, color: Colors.grey),
-                          ),
-                        )
-                        : ListView.builder(
-                          padding: const EdgeInsets.all(8.0),
-                          itemCount: service.messages.length,
-                          itemBuilder: (context, index) {
-                            final message = service.messages[index];
-                            return MessageBubble(message: message);
-                          },
-                        ),
+                child: !service.isLoaded
+                    ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text('Loading conversation history...'),
+                    ],
+                  ),
+                )
+                    : service.messages.isEmpty
+                    ? const Center(
+                  child: Text(
+                    'Send a message to start chatting!\n\nYour conversation will be saved automatically.',
+                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                    textAlign: TextAlign.center,
+                  ),
+                )
+                    : ListView.builder(
+                  padding: const EdgeInsets.all(8.0),
+                  itemCount: service.messages.length,
+                  itemBuilder: (context, index) {
+                    final message = service.messages[index];
+                    return MessageBubble(message: message);
+                  },
+                ),
               ),
 
               // Processing indicator
@@ -299,6 +304,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 }
 
+
 class MessageBubble extends StatelessWidget {
   final ConversationMessage message;
 
@@ -315,10 +321,9 @@ class MessageBubble extends StatelessWidget {
           maxWidth: MediaQuery.of(context).size.width * 0.8,
         ),
         decoration: BoxDecoration(
-          color:
-              message.isUser
-                  ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).colorScheme.surfaceVariant,
+          color: message.isUser
+              ? Theme.of(context).colorScheme.primary
+              : Theme.of(context).colorScheme.surfaceVariant,
           borderRadius: BorderRadius.circular(16.0),
         ),
         child: Column(
@@ -327,10 +332,9 @@ class MessageBubble extends StatelessWidget {
             Text(
               message.text,
               style: TextStyle(
-                color:
-                    message.isUser
-                        ? Theme.of(context).colorScheme.onPrimary
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
+                color: message.isUser
+                    ? Theme.of(context).colorScheme.onPrimary
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
             const SizedBox(height: 4),
@@ -338,14 +342,9 @@ class MessageBubble extends StatelessWidget {
               '${message.timestamp.hour}:${message.timestamp.minute.toString().padLeft(2, '0')}',
               style: TextStyle(
                 fontSize: 12,
-                color:
-                    message.isUser
-                        ? Theme.of(
-                          context,
-                        ).colorScheme.onPrimary.withOpacity(0.7)
-                        : Theme.of(
-                          context,
-                        ).colorScheme.onSurfaceVariant.withOpacity(0.7),
+                color: message.isUser
+                    ? Theme.of(context).colorScheme.onPrimary.withOpacity(0.7)
+                    : Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.7),
               ),
             ),
           ],
