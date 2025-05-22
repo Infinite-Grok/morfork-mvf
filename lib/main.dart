@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'services/conversation_service.dart';
 import 'adapters/test_adapter.dart';
+import 'adapters/grok_adapter.dart';
 
 void main() {
   runApp(const MorforkApp());
@@ -35,12 +36,14 @@ class ConversationScreen extends StatefulWidget {
 
 class _ConversationScreenState extends State<ConversationScreen> {
   final TextEditingController _messageController = TextEditingController();
+  final TextEditingController _apiKeyController = TextEditingController();
   late ConversationService _conversationService;
+  bool _showApiKeyInput = false;
 
   @override
   void initState() {
     super.initState();
-    // Initialize with test adapter after build
+    // Initialize with test adapter
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _conversationService = Provider.of<ConversationService>(
         context,
@@ -53,6 +56,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void dispose() {
     _messageController.dispose();
+    _apiKeyController.dispose();
     super.dispose();
   }
 
@@ -64,12 +68,75 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  void _toggleApiKeyInput() {
+    setState(() {
+      _showApiKeyInput = !_showApiKeyInput;
+    });
+  }
+
+  void _setGrokAdapter() {
+    final apiKey = _apiKeyController.text.trim();
+    if (apiKey.isNotEmpty) {
+      _conversationService.setAdapter(GrokAdapter(apiKey: apiKey));
+      setState(() {
+        _showApiKeyInput = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Grok adapter configured!')));
+    }
+  }
+
+  void _setTestAdapter() {
+    _conversationService.setAdapter(TestAdapter());
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Test adapter active')));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: const Text('Morfork MVF - AI Adapter Test'),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              switch (value) {
+                case 'grok':
+                  _toggleApiKeyInput();
+                  break;
+                case 'test':
+                  _setTestAdapter();
+                  break;
+              }
+            },
+            itemBuilder:
+                (context) => [
+                  const PopupMenuItem(
+                    value: 'grok',
+                    child: Row(
+                      children: [
+                        Icon(Icons.psychology),
+                        SizedBox(width: 8),
+                        Text('Use Grok AI'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'test',
+                    child: Row(
+                      children: [
+                        Icon(Icons.science),
+                        SizedBox(width: 8),
+                        Text('Use Test Adapter'),
+                      ],
+                    ),
+                  ),
+                ],
+          ),
+        ],
       ),
       body: Consumer<ConversationService>(
         builder: (context, service, child) {
@@ -97,6 +164,40 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   ),
                 ),
               ),
+
+              // API Key input (when visible)
+              if (_showApiKeyInput)
+                Container(
+                  padding: const EdgeInsets.all(16.0),
+                  color: Colors.blue.shade50,
+                  child: Column(
+                    children: [
+                      TextField(
+                        controller: _apiKeyController,
+                        decoration: const InputDecoration(
+                          labelText: 'Grok API Key',
+                          hintText: 'Enter your xAI API key',
+                          border: OutlineInputBorder(),
+                        ),
+                        obscureText: true,
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          ElevatedButton(
+                            onPressed: _setGrokAdapter,
+                            child: const Text('Connect Grok'),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            onPressed: _toggleApiKeyInput,
+                            child: const Text('Cancel'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
 
               // Error display
               if (service.error != null)
