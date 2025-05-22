@@ -1,122 +1,253 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'services/conversation_service.dart';
+import 'adapters/test_adapter.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const MorforkApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class MorforkApp extends StatelessWidget {
+  const MorforkApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+    return ChangeNotifierProvider(
+      create: (context) => ConversationService(),
+      child: MaterialApp(
+        title: 'Morfork MVF',
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+          useMaterial3: true,
+        ),
+        home: const ConversationScreen(),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class ConversationScreen extends StatefulWidget {
+  const ConversationScreen({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _ConversationScreenState extends State<ConversationScreen> {
+  final TextEditingController _messageController = TextEditingController();
+  late ConversationService _conversationService;
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+  @override
+  void initState() {
+    super.initState();
+    // Initialize with test adapter after build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _conversationService = Provider.of<ConversationService>(
+        context,
+        listen: false,
+      );
+      _conversationService.setAdapter(TestAdapter());
     });
   }
 
   @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  void _sendMessage() {
+    final message = _messageController.text;
+    if (message.isNotEmpty) {
+      _conversationService.sendMessage(message);
+      _messageController.clear();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('Morfork MVF - AI Adapter Test'),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: Consumer<ConversationService>(
+        builder: (context, service, child) {
+          return Column(
+            children: [
+              // Status bar
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(8.0),
+                color:
+                    service.currentAdapter?.isAvailable == true
+                        ? Colors.green.shade100
+                        : Colors.red.shade100,
+                child: Text(
+                  service.currentAdapter != null
+                      ? 'Connected: ${service.currentAdapter!.name}'
+                      : 'No adapter connected',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color:
+                        service.currentAdapter?.isAvailable == true
+                            ? Colors.green.shade800
+                            : Colors.red.shade800,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+
+              // Error display
+              if (service.error != null)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(8.0),
+                  color: Colors.red.shade50,
+                  child: Text(
+                    'Error: ${service.error}',
+                    style: TextStyle(color: Colors.red.shade800),
+                  ),
+                ),
+
+              // Messages list
+              Expanded(
+                child:
+                    service.messages.isEmpty
+                        ? const Center(
+                          child: Text(
+                            'Send a message to test the AI adapter!',
+                            style: TextStyle(fontSize: 16, color: Colors.grey),
+                          ),
+                        )
+                        : ListView.builder(
+                          padding: const EdgeInsets.all(8.0),
+                          itemCount: service.messages.length,
+                          itemBuilder: (context, index) {
+                            final message = service.messages[index];
+                            return MessageBubble(message: message);
+                          },
+                        ),
+              ),
+
+              // Processing indicator
+              if (service.isProcessing)
+                const Padding(
+                  padding: EdgeInsets.all(8.0),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 8),
+                      Text('AI is thinking...'),
+                    ],
+                  ),
+                ),
+
+              // Input area
+              Container(
+                padding: const EdgeInsets.all(8.0),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  border: Border(
+                    top: BorderSide(
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        decoration: const InputDecoration(
+                          hintText: 'Type a message...',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                        ),
+                        onSubmitted: (_) => _sendMessage(),
+                        enabled: !service.isProcessing,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: service.isProcessing ? null : _sendMessage,
+                      icon: const Icon(Icons.send),
+                    ),
+                    IconButton(
+                      onPressed: service.clearConversation,
+                      icon: const Icon(Icons.clear),
+                      tooltip: 'Clear conversation',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class MessageBubble extends StatelessWidget {
+  final ConversationMessage message;
+
+  const MessageBubble({super.key, required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: message.isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4.0),
+        padding: const EdgeInsets.all(12.0),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.8,
+        ),
+        decoration: BoxDecoration(
+          color:
+              message.isUser
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.surfaceVariant,
+          borderRadius: BorderRadius.circular(16.0),
+        ),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              message.text,
+              style: TextStyle(
+                color:
+                    message.isUser
+                        ? Theme.of(context).colorScheme.onPrimary
+                        : Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${message.timestamp.hour}:${message.timestamp.minute.toString().padLeft(2, '0')}',
+              style: TextStyle(
+                fontSize: 12,
+                color:
+                    message.isUser
+                        ? Theme.of(
+                          context,
+                        ).colorScheme.onPrimary.withOpacity(0.7)
+                        : Theme.of(
+                          context,
+                        ).colorScheme.onSurfaceVariant.withOpacity(0.7),
+              ),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
