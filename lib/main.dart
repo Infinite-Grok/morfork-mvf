@@ -147,45 +147,47 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   ),
                 ),
 
-              // Input area
-              Container(
-                padding: const EdgeInsets.all(8.0),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  border: Border(
-                    top: BorderSide(
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _messageController,
-                        decoration: const InputDecoration(
-                          hintText: 'Type a message...',
-                          border: OutlineInputBorder(),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                        ),
-                        onSubmitted: (_) => _sendMessage(),
-                        enabled: !service.isProcessing,
+              // Input area with SafeArea protection
+              SafeArea(
+                child: Container(
+                  padding: const EdgeInsets.all(8.0),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surface,
+                    border: Border(
+                      top: BorderSide(
+                        color: Theme.of(context).colorScheme.outline,
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      onPressed: service.isProcessing ? null : _sendMessage,
-                      icon: const Icon(Icons.send),
-                    ),
-                    IconButton(
-                      onPressed: service.clearConversation,
-                      icon: const Icon(Icons.clear),
-                      tooltip: 'Clear conversation',
-                    ),
-                  ],
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _messageController,
+                          decoration: const InputDecoration(
+                            hintText: 'Type a message...',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                          ),
+                          onSubmitted: (_) => _sendMessage(),
+                          enabled: !service.isProcessing,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        onPressed: service.isProcessing ? null : _sendMessage,
+                        icon: const Icon(Icons.send),
+                      ),
+                      IconButton(
+                        onPressed: service.clearConversation,
+                        icon: const Icon(Icons.clear),
+                        tooltip: 'Clear conversation',
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
