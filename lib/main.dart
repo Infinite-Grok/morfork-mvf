@@ -195,13 +195,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Grok adapter configured and saved!')),
+            SnackBar(
+              content: const Text('Grok adapter configured and saved!'),
+              behavior: SnackBarBehavior.floating,
+              margin: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).size.height * 0.15,
+                  left: 16,
+                  right: 16
+              ),
+            ),
           );
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to save Grok settings: $e')),
+            SnackBar(
+              content: Text('Failed to save Grok settings: $e'),
+              backgroundColor: Colors.red.shade600,
+              behavior: SnackBarBehavior.floating,
+              margin: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).size.height * 0.15,
+                  left: 16,
+                  right: 16
+              ),
+            ),
           );
         }
       }
@@ -222,13 +239,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Claude adapter configured and saved!')),
+            SnackBar(
+              content: const Text('Claude adapter configured and saved!'),
+              behavior: SnackBarBehavior.floating,
+              margin: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).size.height * 0.15,
+                  left: 16,
+                  right: 16
+              ),
+            ),
           );
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to save Claude settings: $e')),
+            SnackBar(
+              content: Text('Failed to save Claude settings: $e'),
+              backgroundColor: Colors.red.shade600,
+              behavior: SnackBarBehavior.floating,
+              margin: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).size.height * 0.15,
+                  left: 16,
+                  right: 16
+              ),
+            ),
           );
         }
       }
@@ -250,7 +284,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Test adapter active')),
+          SnackBar(
+            content: const Text('Test adapter active'),
+            behavior: SnackBarBehavior.floating,
+            margin: EdgeInsets.only(
+                bottom: MediaQuery.of(context).size.height * 0.15,
+                left: 16,
+                right: 16
+            ),
+          ),
         );
       }
     } catch (e) {
@@ -295,13 +337,28 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   ? 'GitHub repository connected successfully!'
                   : 'GitHub settings saved (connection test failed)'),
               backgroundColor: isConnected ? Colors.green.shade600 : Colors.orange.shade600,
+              behavior: SnackBarBehavior.floating,
+              margin: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).size.height * 0.15,
+                  left: 16,
+                  right: 16
+              ),
             ),
           );
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to save GitHub settings: $e')),
+            SnackBar(
+              content: Text('Failed to save GitHub settings: $e'),
+              backgroundColor: Colors.red.shade600,
+              behavior: SnackBarBehavior.floating,
+              margin: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).size.height * 0.15,
+                  left: 16,
+                  right: 16
+              ),
+            ),
           );
         }
       }
@@ -336,7 +393,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
       await _conversationService.clearConversation();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Conversation cleared')),
+          SnackBar(
+            content: const Text('Conversation cleared'),
+            behavior: SnackBarBehavior.floating,
+            margin: EdgeInsets.only(
+                bottom: MediaQuery.of(context).size.height * 0.15,
+                left: 16,
+                right: 16
+            ),
+          ),
         );
       }
     }
@@ -349,7 +414,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('All settings cleared')),
+          SnackBar(
+            content: const Text('All settings cleared'),
+            behavior: SnackBarBehavior.floating,
+            margin: EdgeInsets.only(
+                bottom: MediaQuery.of(context).size.height * 0.15,
+                left: 16,
+                right: 16
+            ),
+          ),
         );
       }
     } catch (e) {

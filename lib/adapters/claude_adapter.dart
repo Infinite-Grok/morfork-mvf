@@ -22,6 +22,19 @@ class ClaudeAdapter implements AIAdapter {
 
   @override
   Future<String> sendMessage(String message) async {
+    // Legacy single message support - convert to conversation format
+    final conversation = [
+      ChatMessage(
+        content: message,
+        isUser: true,
+        timestamp: DateTime.now(),
+      ),
+    ];
+    return await sendConversation(conversation);
+  }
+
+  @override
+  Future<String> sendConversation(List<ChatMessage> messages) async {
     if (!isAvailable) {
       throw Exception('Claude API key not configured');
     }
@@ -34,15 +47,16 @@ class ClaudeAdapter implements AIAdapter {
       'anthropic-version': '2023-06-01',
     };
 
+    // Convert our message format to Claude's API format
+    final apiMessages = messages.map((msg) => {
+      'role': msg.role,
+      'content': msg.content,
+    }).toList();
+
     final body = jsonEncode({
       'model': _model,
       'max_tokens': 4000,
-      'messages': [
-        {
-          'role': 'user',
-          'content': message,
-        }
-      ],
+      'messages': apiMessages,
     });
 
     try {
@@ -55,7 +69,6 @@ class ClaudeAdapter implements AIAdapter {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
-        // Claude API returns content in a different format
         if (data['content'] != null && data['content'].isNotEmpty) {
           final content = data['content'][0]['text'];
           return content ?? 'No response from Claude';

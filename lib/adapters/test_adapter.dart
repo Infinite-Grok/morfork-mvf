@@ -21,25 +21,40 @@ class TestAdapter implements AIAdapter {
 
   @override
   Future<String> sendMessage(String message) async {
-    // Simulate network delay
+    final conversation = [
+      ChatMessage(
+        content: message,
+        isUser: true,
+        timestamp: DateTime.now(),
+      ),
+    ];
+    return await sendConversation(conversation);
+  }
+
+  @override
+  Future<String> sendConversation(List<ChatMessage> messages) async {
     await Future.delayed(const Duration(milliseconds: 500));
 
-    // Cycle through predefined responses
+    final lastMessage = messages.where((m) => m.isUser).lastOrNull;
+    final userMessage = lastMessage?.content ?? 'No message';
+
     final response = _responses[_responseIndex % _responses.length];
     _responseIndex++;
 
-    // Add the user's message context to the response
-    return 'You said: "$message"\n\n$response';
+    String contextualResponse = response;
+    if (userMessage.toLowerCase().contains('name') &&
+        messages.any((m) => m.content.toLowerCase().contains('jonathan'))) {
+      contextualResponse = 'Based on our conversation, your name is Jonathan! $response';
+    }
+
+    return 'You said: "$userMessage"\n\n$contextualResponse';
   }
 
   @override
   Future<void> initialize({Map<String, dynamic>? config}) async {
-    // Reset response index on initialization
     _responseIndex = 0;
   }
 
   @override
-  Future<void> dispose() async {
-    // Nothing to clean up for test adapter
-  }
+  Future<void> dispose() async {}
 }
