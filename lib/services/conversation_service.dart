@@ -1,752 +1,672 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../adapters/ai_adapter.dart';
 import '../database/database_helper.dart';
-import '../services/api_key_service.dart';
-import '../services/github_service.dart';
+import 'github_service.dart';
 
-/// Represents a single message in a conversation
 class ConversationMessage {
+  final int? id;
   final String text;
   final bool isUser;
   final DateTime timestamp;
+  final String? metadata;
 
   ConversationMessage({
+    this.id,
     required this.text,
     required this.isUser,
-    DateTime? timestamp,
-  }) : timestamp = timestamp ?? DateTime.now();
+    required this.timestamp,
+    this.metadata,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'text': text,
+      'isUser': isUser ? 1 : 0,
+      'timestamp': timestamp.millisecondsSinceEpoch,
+      'metadata': metadata,
+    };
+  }
+
+  factory ConversationMessage.fromMap(Map<String, dynamic> map) {
+    return ConversationMessage(
+      id: map['id'],
+      text: map['text'],
+      isUser: map['isUser'] == 1,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(map['timestamp']),
+      metadata: map['metadata'],
+    );
+  }
 }
 
-/// Service that manages conversations using AI adapters with persistent storage
-/// Now includes GitHub write operations for AI-assisted development
-class ConversationService extends ChangeNotifier {
+class ConversationService with ChangeNotifier {
+  static final ConversationService _instance = ConversationService._internal();
+  factory ConversationService() => _instance;
+  ConversationService._internal();
+
   AIAdapter? _currentAdapter;
   final List<ConversationMessage> _messages = [];
-  bool _isProcessing = false;
-  String? _error;
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  bool _isLoaded = false;
-  GitHubService? _githubService;
+  final DatabaseHelper _databaseHelper = DatabaseHelper();
+  final GitHubService _githubService = GitHubService.instance;
+  bool _isLoading = false;
+  bool _projectContextLoaded = false;
+  final Set<String> _loadedFiles = {};
 
-  // Pending changes for /diff command
-  final Map<String, String> _pendingChanges = {};
-
-  AIAdapter? get currentAdapter => _currentAdapter;
+  // Getters
   List<ConversationMessage> get messages => List.unmodifiable(_messages);
-  bool get isProcessing => _isProcessing;
-  String? get error => _error;
-  bool get isLoaded => _isLoaded;
+  bool get isLoading => _isLoading;
+  String get currentAdapterName => _currentAdapter?.name ?? 'No adapter selected';
+  bool get hasAdapter => _currentAdapter != null;
+  AIAdapter? get currentAdapter => _currentAdapter;
+  bool get isProcessing => _isLoading;
+  bool get isLoaded => true;
+  String? get error => null;
 
-  Future<void> loadConversationHistory() async {
-    if (_isLoaded) return;
+  // Initialize service with auto-context loading
+  Future<void> initialize() async {
+    await _databaseHelper.database;
+    await _loadConversationHistory();
+
+    // Auto-load project context if GitHub is configured
+    if (_githubService.isConfigured && !_projectContextLoaded) {
+      await _loadProjectContext();
+    }
+  }
+
+  // Auto-load project context
+  Future<void> _loadProjectContext() async {
     try {
-      final savedMessages = await _dbHelper.loadMessages();
-      _messages.clear();
-      _messages.addAll(savedMessages);
-      _isLoaded = true;
-      notifyListeners();
-    } catch (e) {
-      _error = 'Failed to load conversation history: $e';
-      notifyListeners();
-    }
-  }
+      _projectContextLoaded = true;
 
-  Future<void> setAdapter(AIAdapter adapter) async {
-    try {
-      _error = null;
-      await adapter.initialize();
-      _currentAdapter = adapter;
-      await _initializeGitHubService();
-      if (!_isLoaded) {
-        await loadConversationHistory();
-      }
-      notifyListeners();
-    } catch (e) {
-      _error = 'Failed to initialize adapter: $e';
-      notifyListeners();
-    }
-  }
-
-  Future<void> _initializeGitHubService() async {
-    try {
-      final config = await ApiKeyService.getGitHubRepo();
-      if (config['owner'] != null && config['repo'] != null) {
-        _githubService = GitHubService(
-          owner: config['owner']!,
-          repo: config['repo']!,
-          token: config['token'],
-        );
-      }
-    } catch (e) {
-      debugPrint('Failed to initialize GitHub service: $e');
-    }
-  }
-
-  /// PUBLIC: Re-initialize GitHub service after config changes
-  Future<void> reinitializeGitHub() async {
-    await _initializeGitHubService();
-    notifyListeners(); // Notify UI that GitHub service may have changed
-  }
-
-  Future<void> sendMessage(String message) async {
-    if (_currentAdapter == null) {
-      _error = 'No AI adapter configured';
-      notifyListeners();
-      return;
-    }
-
-    if (message.trim().isEmpty) return;
-
-    // Add user message
-    final userMessage = ConversationMessage(text: message, isUser: true);
-    _messages.add(userMessage);
-    notifyListeners();
-
-    try {
-      await _dbHelper.insertMessage(userMessage, _currentAdapter!.name);
-    } catch (e) {
-      debugPrint('Failed to save user message: $e');
-    }
-
-    // Handle GitHub commands (including new write commands)
-    if (message.startsWith('/')) {
-      await _handleGitHubCommand(message);
-      return;
-    }
-
-    _isProcessing = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      // Build conversation history for AI with ENHANCED CONTEXT
-      final conversationHistory = _buildConversationHistoryWithContext();
-
-      // Send to AI with SPECIFIC INSTRUCTIONS
-      final response = await _currentAdapter!.sendConversation(conversationHistory);
-
-      // Add AI response
-      final aiMessage = ConversationMessage(text: response, isUser: false);
-      _messages.add(aiMessage);
-
-      try {
-        await _dbHelper.insertMessage(aiMessage, _currentAdapter!.name);
-      } catch (e) {
-        debugPrint('Failed to save AI message: $e');
-      }
-
-      // CRITICAL: Check if this AI response should trigger a GitHub action
-      await _checkForGitHubActions(response);
-
-    } catch (e) {
-      _error = 'Failed to get AI response: $e';
-      final errorMessage = ConversationMessage(text: 'Error: $e', isUser: false);
-      _messages.add(errorMessage);
-
-      try {
-        await _dbHelper.insertMessage(errorMessage, _currentAdapter?.name ?? 'Unknown');
-      } catch (dbError) {
-        debugPrint('Failed to save error message: $dbError');
-      }
-    } finally {
-      _isProcessing = false;
-      notifyListeners();
-    }
-  }
-
-  /// ENHANCED: Check if AI response should trigger GitHub actions
-  Future<void> _checkForGitHubActions(String aiResponse) async {
-    if (_pendingChanges.isEmpty) return;
-
-    debugPrint('🔍 Checking for GitHub actions in AI response...');
-    debugPrint('📋 Pending changes: ${_pendingChanges.keys.toList()}');
-
-    // Check if AI is responding to a file creation/edit request
-    for (final entry in _pendingChanges.entries.toList()) {
-      final filename = entry.key;
-      final status = entry.value;
-
-      debugPrint('🔍 Checking $filename with status: $status');
-
-      if (status == 'CREATE_PENDING' || status == 'UPDATE_PENDING') {
-        // IMPROVED: Look for code blocks with multiple patterns
-        final codePatterns = [
-          RegExp(r'```dart\n(.*?)\n```', dotAll: true),
-          RegExp(r'```\n(.*?)\n```', dotAll: true),
-          RegExp(r'```flutter\n(.*?)\n```', dotAll: true),
-        ];
-
-        String? extractedCode;
-        for (final pattern in codePatterns) {
-          final match = pattern.firstMatch(aiResponse);
-          if (match != null) {
-            extractedCode = match.group(1)?.trim();
-            debugPrint('📝 Found code block with pattern: ${pattern.pattern}');
-            break;
-          }
-        }
-
-        if (extractedCode != null && extractedCode.isNotEmpty) {
-          // IMPROVED: Better code validation
-          if (_isValidDartCode(extractedCode)) {
-            debugPrint('✅ Valid Dart code detected, executing GitHub write...');
-            await _performGitHubWrite(filename, extractedCode, status);
-            _pendingChanges.remove(filename);
-            debugPrint('🗑️ Removed $filename from pending changes');
-          } else {
-            debugPrint('❌ Code validation failed for $filename');
-          }
-        } else {
-          debugPrint('❌ No code block found in AI response');
-        }
-      }
-      // Handle case where we already have content to commit
-      else if (status != 'CREATE_PENDING' && status != 'UPDATE_PENDING') {
-        // We have actual content, commit it
-        if (aiResponse.toLowerCase().contains('commit') ||
-            aiResponse.toLowerCase().contains('save') ||
-            aiResponse.toLowerCase().contains('write')) {
-          debugPrint('✅ Commit request detected, executing GitHub write...');
-          await _performGitHubWrite(filename, status, 'UPDATE');
-          _pendingChanges.remove(filename);
-        }
-      }
-    }
-  }
-
-  /// IMPROVED: Better code validation
-  bool _isValidDartCode(String code) {
-    final trimmedCode = code.trim();
-
-    // Check for basic Dart patterns
-    final dartPatterns = [
-      'void ', 'class ', 'import ', 'library ', 'part ',
-      'String ', 'int ', 'double ', 'bool ', 'var ',
-      'final ', 'const ', 'static ', 'abstract ',
-      'extends ', 'implements ', 'with ', 'enum ',
-      'typedef ', 'mixin ', '=>', 'async ', 'await'
-    ];
-
-    return trimmedCode.isNotEmpty &&
-        dartPatterns.any((pattern) => trimmedCode.contains(pattern));
-  }
-
-  /// ENHANCED: Actually perform the GitHub write operation with better error handling
-  Future<void> _performGitHubWrite(String filename, String content, String operation) async {
-    if (_githubService == null || !_githubService!.canWrite) {
-      _addSystemMessage('❌ GitHub write not available - token missing or invalid');
-      return;
-    }
-
-    try {
-      _addSystemMessage('📤 Writing to GitHub repository...');
-      debugPrint('📤 Starting GitHub write: $filename ($operation)');
-
-      GitHubWriteResult result;
-
-      if (operation == 'CREATE_PENDING') {
-        debugPrint('📝 Creating new file: $filename');
-        result = await _githubService!.createFile(
-          filePath: filename,
-          content: content,
-          commitMessage: 'Add $filename via Morfork AI Assistant',
-        );
-      } else {
-        debugPrint('✏️ Updating existing file: $filename');
-        result = await _githubService!.updateFile(
-          filePath: filename,
-          content: content,
-          commitMessage: 'Update $filename via Morfork AI Assistant',
-        );
-      }
-
-      // ENHANCED SUCCESS MESSAGE
-      _addSystemMessage('''
-✅ **GitHub Operation Successful!**
-
-📋 **File Details:**
-• File: `$filename`
-• Operation: ${operation == 'CREATE_PENDING' ? 'CREATED' : 'UPDATED'}
-• Lines: ${content.split('\n').length}
-
-📝 **Commit Information:**
-• Message: "${result.commitMessage}"
-• SHA: `${result.commitSha?.substring(0, 7) ?? 'N/A'}`
-• Repository: ${_githubService!.owner}/${_githubService!.repo}
-
-🔗 **View File:** [${filename}](https://github.com/${_githubService!.owner}/${_githubService!.repo}/blob/main/$filename)
-
-🎉 File has been successfully committed to your repository!
-''');
-
-      debugPrint('✅ GitHub write completed successfully');
-
-    } catch (e) {
-      debugPrint('❌ GitHub write failed: $e');
-      _addSystemMessage('''
-❌ **GitHub Write Failed**
-
-**Error:** $e
-
-**Troubleshooting:**
-• Verify your GitHub token has write permissions
-• Check if the repository exists and is accessible
-• Ensure the file path is valid
-• Try the /status command to check GitHub connection
-
-Use `/status` to verify your GitHub configuration.
-''');
-    }
-  }
-
-  /// ENHANCED: Build conversation history WITH GITHUB CONTEXT INSTRUCTIONS
-  List<ChatMessage> _buildConversationHistoryWithContext() {
-    // Get last 15 messages for context
-    final recentMessages = _messages.length > 15
-        ? _messages.skip(_messages.length - 15).toList()
-        : _messages.toList();
-
-    final chatMessages = <ChatMessage>[];
-
-    // ADD CRITICAL SYSTEM CONTEXT if we have pending GitHub operations
-    if (_pendingChanges.isNotEmpty) {
-      final pendingFiles = _pendingChanges.keys.join(', ');
-      chatMessages.add(ChatMessage(
-        content: '''SYSTEM CONTEXT: You are working with the Morfork AI development platform that has direct GitHub integration. 
-
-PENDING FILE OPERATIONS: $pendingFiles
-
-CRITICAL INSTRUCTIONS:
-- When providing code, use proper code blocks with ```dart or ``` 
-- Do NOT generate fake GitHub success messages
-- Do NOT say things like "committed to GitHub" or "file created successfully"
-- The system will automatically handle GitHub operations after you provide the code
-- Focus on generating high-quality, working Dart/Flutter code
-- Let the system handle all GitHub operations and success/failure messages
-
-Your job is to provide excellent code. The system will handle the rest.''',
+      // Load project structure
+      final structure = await _githubService.getRepositoryStructure();
+      final contextMessage = ConversationMessage(
+        text: '🎯 Auto-loaded project context:\n\n📁 Project Structure:\n$structure',
         isUser: false,
         timestamp: DateTime.now(),
-      ));
+      );
+      _addMessage(contextMessage);
+
+      // Load key files automatically
+      final keyFiles = ['lib/main.dart', 'pubspec.yaml', 'README.md'];
+      for (final file in keyFiles) {
+        if (await _githubService.fileExists(file)) {
+          final content = await _githubService.getFileContent(file);
+          final fileMessage = ConversationMessage(
+            text: '📄 Auto-loaded $file:\n\n```\n$content\n```',
+            isUser: false,
+            timestamp: DateTime.now(),
+          );
+          _addMessage(fileMessage);
+          _loadedFiles.add(file);
+        }
+      }
+
+      // Add AI awareness message
+      final awarenessMessage = ConversationMessage(
+        text: '🧠 I now have full awareness of your ${_githubService.repo} project structure and key files. I can discuss your code, suggest improvements, help with debugging, or help you build new features. What would you like to work on?',
+        isUser: false,
+        timestamp: DateTime.now(),
+      );
+      _addMessage(awarenessMessage);
+
+    } catch (e) {
+      final errorMessage = ConversationMessage(
+        text: '⚠️ Could not auto-load project context: $e',
+        isUser: false,
+        timestamp: DateTime.now(),
+      );
+      _addMessage(errorMessage);
+    }
+  }
+
+  // Set AI adapter
+  Future<void> setAdapter(AIAdapter adapter) async {
+    _currentAdapter = adapter;
+    await adapter.initialize();
+
+    // Add connection message
+    final connectionMessage = ConversationMessage(
+      text: '🔗 Connected to ${adapter.name}',
+      isUser: false,
+      timestamp: DateTime.now(),
+    );
+
+    _addMessage(connectionMessage);
+
+    // If project context is loaded, remind AI of it
+    if (_projectContextLoaded) {
+      final reminderMessage = ConversationMessage(
+        text: '🧠 AI context restored: I have full awareness of your ${_githubService.repo} project including structure and ${_loadedFiles.length} key files.',
+        isUser: false,
+        timestamp: DateTime.now(),
+      );
+      _addMessage(reminderMessage);
     }
 
-    // Include ALL messages, including system messages with project context
-    chatMessages.addAll(recentMessages
+    notifyListeners();
+  }
+
+  // Reinitialize GitHub
+  Future<void> reinitializeGitHub() async {
+    _projectContextLoaded = false;
+    _loadedFiles.clear();
+    if (_githubService.isConfigured) {
+      await _loadProjectContext();
+    }
+  }
+
+  // Enhanced send message with auto file loading
+  Future<void> sendMessage(String message) async {
+    if (message.trim().isEmpty) return;
+
+    final userMessage = ConversationMessage(
+      text: message,
+      isUser: true,
+      timestamp: DateTime.now(),
+    );
+
+    _addMessage(userMessage);
+
+    try {
+      _setLoading(true);
+
+      // Check if message mentions files that aren't loaded yet
+      await _checkAndLoadMentionedFiles(message);
+
+      // Handle GitHub commands
+      if (message.startsWith('/')) {
+        final result = await _handleGitHubCommand(message);
+        final systemMessage = ConversationMessage(
+          text: result,
+          isUser: false,
+          timestamp: DateTime.now(),
+        );
+        _addMessage(systemMessage);
+      } else {
+        // Handle AI conversation with enhanced context
+        if (_currentAdapter == null) {
+          final errorMessage = ConversationMessage(
+            text: '❌ No AI adapter selected. Please select an adapter first.',
+            isUser: false,
+            timestamp: DateTime.now(),
+          );
+          _addMessage(errorMessage);
+        } else {
+          final conversationHistory = _buildEnhancedConversationHistory();
+          final response = await _currentAdapter!.sendConversation(conversationHistory);
+
+          final aiMessage = ConversationMessage(
+            text: response,
+            isUser: false,
+            timestamp: DateTime.now(),
+          );
+          _addMessage(aiMessage);
+
+          // Check if AI response contains code for pending file operations
+          await _processAIResponseForFileOps(response);
+
+          // Check if AI response suggests loading more files
+          await _checkForAISuggestedFiles(response);
+        }
+      }
+    } catch (e) {
+      final errorMessage = ConversationMessage(
+        text: '❌ Error: $e',
+        isUser: false,
+        timestamp: DateTime.now(),
+      );
+      _addMessage(errorMessage);
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  // Auto-detect and load mentioned files
+  Future<void> _checkAndLoadMentionedFiles(String message) async {
+    final filePatterns = [
+      RegExp(r'lib/[\w/]+\.dart'),
+      RegExp(r'[\w/]+\.yaml'),
+      RegExp(r'[\w/]+\.json'),
+      RegExp(r'[\w/]+\.md'),
+      RegExp(r'test/[\w/]+\.dart'),
+    ];
+
+    for (final pattern in filePatterns) {
+      final matches = pattern.allMatches(message);
+      for (final match in matches) {
+        final filename = match.group(0)!;
+        if (!_loadedFiles.contains(filename)) {
+          await _autoLoadFile(filename);
+        }
+      }
+    }
+  }
+
+  // Auto-load a specific file
+  Future<void> _autoLoadFile(String filename) async {
+    try {
+      if (await _githubService.fileExists(filename)) {
+        final content = await _githubService.getFileContent(filename);
+        final fileMessage = ConversationMessage(
+          text: '🔄 Auto-loaded $filename for context:\n\n```\n$content\n```',
+          isUser: false,
+          timestamp: DateTime.now(),
+        );
+        _addMessage(fileMessage);
+        _loadedFiles.add(filename);
+      }
+    } catch (e) {
+      // Silently fail - don't spam user with file load errors
+    }
+  }
+
+  // GitHub Write Operations
+  String? _pendingFileOperation;
+  String? _pendingFileName;
+  String? _pendingFileContent;
+
+  // Start file creation workflow
+  Future<String> _startFileCreation(String filename) async {
+    if (!await _githubService.testWritePermissions()) {
+      return '❌ GitHub write permissions not available. Please configure your GitHub token with write access.';
+    }
+
+    if (await _githubService.fileExists(filename)) {
+      return '⚠️ File $filename already exists. Use /edit to modify it or choose a different filename.';
+    }
+
+    _pendingFileOperation = 'create';
+    _pendingFileName = filename;
+
+    return '''
+📝 Ready to create: $filename
+
+I'll help you create this file. Please describe what you want in the file, and I'll generate the appropriate content and create it in your GitHub repository.
+
+What should this file contain?
+''';
+  }
+
+  // Start file edit workflow
+  Future<String> _startFileEdit(String filename) async {
+    if (!await _githubService.testWritePermissions()) {
+      return '❌ GitHub write permissions not available. Please configure your GitHub token with write access.';
+    }
+
+    if (!await _githubService.fileExists(filename)) {
+      return '❌ File $filename does not exist. Use /create to create a new file.';
+    }
+
+    // Load current content
+    final currentContent = await _githubService.getFileContent(filename);
+
+    _pendingFileOperation = 'edit';
+    _pendingFileName = filename;
+    _pendingFileContent = currentContent;
+
+    // Auto-load the file for context if not already loaded
+    if (!_loadedFiles.contains(filename)) {
+      await _autoLoadFile(filename);
+    }
+
+    return '''
+✏️ Ready to edit: $filename
+
+Current file content is now loaded in our conversation context. Please describe the changes you want to make, and I'll modify the file accordingly.
+
+What changes would you like to make to this file?
+''';
+  }
+
+  // Delete file
+  Future<String> _deleteFile(String filename) async {
+    if (!await _githubService.testWritePermissions()) {
+      return '❌ GitHub write permissions not available. Please configure your GitHub token with write access.';
+    }
+
+    if (!await _githubService.fileExists(filename)) {
+      return '❌ File $filename does not exist.';
+    }
+
+    try {
+      // Get file SHA for deletion
+      final sha = await _githubService.getFileSha(filename);
+      if (sha == null) {
+        return '❌ Could not get file information for deletion.';
+      }
+
+      // Delete the file
+      final result = await _githubService.deleteFile(
+        path: filename,
+        message: 'Delete $filename via Morfork AI',
+        sha: sha,
+      );
+
+      if (result['success'] == true) {
+        // Remove from loaded files
+        _loadedFiles.remove(filename);
+
+        return '''
+✅ Successfully deleted: $filename
+
+The file has been removed from your GitHub repository.
+''';
+      } else {
+        return '❌ Failed to delete file: ${result['error']}';
+      }
+    } catch (e) {
+      return '❌ Error deleting file: $e';
+    }
+  }
+
+  // Process AI response for file operations
+  Future<void> _processAIResponseForFileOps(String aiResponse) async {
+    if (_pendingFileOperation == null || _pendingFileName == null) return;
+
+    // Check if AI provided code in the response
+    final codeBlocks = _extractCodeBlocks(aiResponse);
+
+    if (codeBlocks.isNotEmpty) {
+      // Use the first code block as file content
+      final fileContent = codeBlocks.first;
+
+      try {
+        String? result;
+
+        if (_pendingFileOperation == 'create') {
+          result = await _createFileOnGitHub(_pendingFileName!, fileContent);
+        } else if (_pendingFileOperation == 'edit') {
+          result = await _updateFileOnGitHub(_pendingFileName!, fileContent);
+        }
+
+        if (result != null) {
+          // Add system message about the file operation
+          final systemMessage = ConversationMessage(
+            text: result,
+            isUser: false,
+            timestamp: DateTime.now(),
+          );
+          _addMessage(systemMessage);
+
+          // Clear pending operation
+          _pendingFileOperation = null;
+          _pendingFileName = null;
+          _pendingFileContent = null;
+        }
+      } catch (e) {
+        final errorMessage = ConversationMessage(
+          text: '❌ Error executing file operation: $e',
+          isUser: false,
+          timestamp: DateTime.now(),
+        );
+        _addMessage(errorMessage);
+      }
+    }
+  }
+
+  // Extract code blocks from AI response
+  List<String> _extractCodeBlocks(String text) {
+    final codeBlockRegex = RegExp(r'```(?:\w+\n)?(.*?)```', dotAll: true);
+    return codeBlockRegex.allMatches(text)
+        .map((match) => match.group(1)?.trim() ?? '')
+        .where((code) => code.isNotEmpty)
+        .toList();
+  }
+
+  // Create file on GitHub
+  Future<String> _createFileOnGitHub(String filename, String content) async {
+    final result = await _githubService.createOrUpdateFile(
+      path: filename,
+      content: content,
+      message: 'Create $filename via Morfork AI',
+    );
+
+    if (result['success'] == true) {
+      // Add to loaded files
+      _loadedFiles.add(filename);
+
+      return '''
+✅ Successfully created: $filename
+
+🔗 Repository: ${_githubService.owner}/${_githubService.repo}
+📄 View file: ${result['url']}
+📝 Commit: ${result['sha']?.substring(0, 7)}
+
+The file has been created in your GitHub repository!
+''';
+    } else {
+      return '❌ Failed to create file: ${result['error']}';
+    }
+  }
+
+  // Update file on GitHub
+  Future<String> _updateFileOnGitHub(String filename, String content) async {
+    // Get current file SHA for update
+    final sha = await _githubService.getFileSha(filename);
+    if (sha == null) {
+      return '❌ Could not get current file information for update.';
+    }
+
+    final result = await _githubService.createOrUpdateFile(
+      path: filename,
+      content: content,
+      message: 'Update $filename via Morfork AI',
+      sha: sha,
+    );
+
+    if (result['success'] == true) {
+      return '''
+✅ Successfully updated: $filename
+
+🔗 Repository: ${_githubService.owner}/${_githubService.repo}
+📄 View file: ${result['url']}
+📝 Commit: ${result['sha']?.substring(0, 7)}
+
+The file has been updated in your GitHub repository!
+''';
+    } else {
+      return '❌ Failed to update file: ${result['error']}';
+    }
+  }
+  Future<void> _checkForAISuggestedFiles(String aiResponse) async {
+    // If AI mentions files it can't see, offer to load them
+    if (aiResponse.contains('would need to see') ||
+        aiResponse.contains('could you show me') ||
+        aiResponse.contains('without seeing the')) {
+
+      final suggestionMessage = ConversationMessage(
+        text: '💡 I noticed I might need more file context. Try mentioning specific filenames (like "lib/services/api_service.dart") and I\'ll automatically load them for you!',
+        isUser: false,
+        timestamp: DateTime.now(),
+      );
+      _addMessage(suggestionMessage);
+    }
+  }
+
+  // Handle GitHub commands (enhanced)
+  Future<String> _handleGitHubCommand(String command) async {
+    final parts = command.split(' ');
+    final cmd = parts[0].toLowerCase();
+
+    try {
+      switch (cmd) {
+        case '/help':
+          return '''
+🔧 GitHub Commands:
+• /structure - Show repository structure
+• /read <filename> - Read file content
+• /files [path] - List files in directory
+• /commits - Show recent commits
+• /status - GitHub connection status
+• /context - Reload project context
+• /loaded - Show loaded files
+
+🚀 GitHub Write Commands:
+• /create <filename> - Create new file with AI
+• /edit <filename> - Edit existing file with AI
+• /delete <filename> - Delete file from repository
+''';
+
+        case '/create':
+          if (parts.length < 2) return '❌ Usage: /create <filename>';
+          final filename = parts.sublist(1).join(' ');
+          return await _startFileCreation(filename);
+
+        case '/edit':
+          if (parts.length < 2) return '❌ Usage: /edit <filename>';
+          final filename = parts.sublist(1).join(' ');
+          return await _startFileEdit(filename);
+
+        case '/delete':
+          if (parts.length < 2) return '❌ Usage: /delete <filename>';
+          final filename = parts.sublist(1).join(' ');
+          return await _deleteFile(filename);
+
+        case '/context':
+          await _loadProjectContext();
+          return '🔄 Project context reloaded!';
+
+        case '/loaded':
+          return '📚 Loaded files (${_loadedFiles.length}):\n${_loadedFiles.join('\n')}';
+
+        case '/structure':
+          final structure = await _githubService.getRepositoryStructure();
+          return '📁 Repository Structure:\n$structure';
+
+        case '/read':
+          if (parts.length < 2) return '❌ Usage: /read <filename>';
+          final filename = parts.sublist(1).join(' ');
+          await _autoLoadFile(filename);
+          return '✅ Loaded $filename into conversation context';
+
+        case '/files':
+          final path = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+          final files = await _githubService.listFiles(path);
+          return '📂 Files in ${path.isEmpty ? 'root' : path}:\n$files';
+
+        case '/commits':
+          final commits = await _githubService.getRecentCommits();
+          return '📝 Recent commits:\n$commits';
+
+        case '/status':
+          final status = _githubService.getStatus();
+          final writePermissions = await _githubService.testWritePermissions();
+
+          return '''
+📊 GitHub Status:
+
+Repository: ${status['repository']}
+Write Token: ${status['writeToken'] == 'Configured' ? '✅ Configured' : '❌ Missing'}
+Write Permissions: ${writePermissions ? '✅ Verified' : '❌ No push access'}
+Project Context: ${_projectContextLoaded ? '✅ Loaded' : '❌ Not loaded'}
+Loaded Files: ${_loadedFiles.length}
+
+${status['writeToken'] != 'Configured' ? '⚠️  Configure GitHub token for write operations.' : ''}
+''';
+
+        default:
+          return '❌ Unknown command: $cmd\nType /help for available commands.';
+      }
+    } catch (e) {
+      return '❌ Error executing command: $e';
+    }
+  }
+
+  // Build enhanced conversation history with smart context
+  List<ChatMessage> _buildEnhancedConversationHistory() {
+    // Include ALL messages for full context, but prioritize recent ones
+    final allMessages = _messages
+        .skip(_messages.length > 20 ? _messages.length - 20 : 0)
         .map((msg) => ChatMessage(
       content: msg.text,
       isUser: msg.isUser,
       timestamp: msg.timestamp,
     ))
-        .toList());
+        .toList();
 
-    return chatMessages;
-  }
-
-  // Enhanced GitHub command handling with write operations
-  Future<void> _handleGitHubCommand(String command) async {
-    if (_githubService == null) {
-      _addSystemMessage('❌ GitHub not configured. Use the menu to set up GitHub integration.');
-      return;
-    }
-
-    _isProcessing = true;
-    notifyListeners();
-
-    try {
-      final parts = command.split(' ');
-      final cmd = parts[0].toLowerCase();
-
-      switch (cmd) {
-      // Existing read commands
-        case '/read':
-          if (parts.length < 2) {
-            _addSystemMessage('**Usage:** `/read <filename>`\n**Example:** `/read lib/main.dart`');
-            break;
-          }
-          final filename = parts.sublist(1).join(' ');
-          await _readFile(filename);
-          break;
-        case '/structure':
-          await _showProjectStructure();
-          break;
-        case '/files':
-          await _listFiles(parts.length > 1 ? parts[1] : null);
-          break;
-        case '/commits':
-          await _showRecentCommits();
-          break;
-
-      // Enhanced write commands
-        case '/create':
-          if (parts.length < 2) {
-            _addSystemMessage('**Usage:** `/create <filename>`\n**Example:** `/create lib/utils/helper.dart`');
-            break;
-          }
-          final filename = parts.sublist(1).join(' ');
-          await _createFileInteractive(filename);
-          break;
-        case '/edit':
-          if (parts.length < 2) {
-            _addSystemMessage('**Usage:** `/edit <filename>`\n**Example:** `/edit lib/main.dart`');
-            break;
-          }
-          final filename = parts.sublist(1).join(' ');
-          await _editFileInteractive(filename);
-          break;
-        case '/delete':
-          if (parts.length < 2) {
-            _addSystemMessage('**Usage:** `/delete <filename>`\n**Example:** `/delete lib/old_file.dart`');
-            break;
-          }
-          final filename = parts.sublist(1).join(' ');
-          await _deleteFileInteractive(filename);
-          break;
-        case '/diff':
-          await _showPendingChanges();
-          break;
-        case '/write':
-          if (parts.length < 2) {
-            _addSystemMessage('**Usage:** `/write <filename>`\n**Example:** `/write lib/new_component.dart`');
-            break;
-          }
-          final filename = parts.sublist(1).join(' ');
-          await _writeFileInteractive(filename);
-          break;
-        case '/status':
-          await _showGitHubStatus();
-          break;
-        case '/help':
-          _showGitHubHelp();
-          break;
-        default:
-          _addSystemMessage('❌ Unknown command: `$cmd`\nType `/help` for available commands.');
-      }
-    } catch (e) {
-      _addSystemMessage('❌ GitHub command error: $e');
-    } finally {
-      _isProcessing = false;
-      notifyListeners();
-    }
-  }
-
-  // ============================================================================
-  // READ OPERATIONS (Existing)
-  // ============================================================================
-
-  void _addSystemMessage(String message) {
-    final systemMessage = ConversationMessage(text: '🤖 **System:** $message', isUser: false);
-    _messages.add(systemMessage);
-    notifyListeners();
-    _dbHelper.insertMessage(systemMessage, 'System').catchError((e) {
-      debugPrint('Failed to save system message: $e');
-    });
-  }
-
-  Future<void> _readFile(String filename) async {
-    try {
-      final content = await _githubService!.readFile(filename);
-      _addSystemMessage('📄 **File:** `$filename`\n\n```dart\n$content\n```');
-    } catch (e) {
-      _addSystemMessage('❌ Failed to read `$filename`: $e');
-    }
-  }
-
-  Future<void> _showProjectStructure() async {
-    try {
-      final files = await _githubService!.getFileTree();
-      final structure = _buildFileTree(files);
-      _addSystemMessage('📁 **Project Structure:**\n\n```\n$structure\n```');
-    } catch (e) {
-      _addSystemMessage('❌ Failed to get project structure: $e');
-    }
-  }
-
-  Future<void> _listFiles(String? path) async {
-    try {
-      final files = await _githubService!.getFileTree(path: path);
-      final fileList = files.map((f) => '${f.isDirectory ? '📁' : '📄'} `${f.name}`').join('\n');
-      final pathStr = path ?? 'root';
-      _addSystemMessage('📋 **Files in $pathStr:**\n\n$fileList');
-    } catch (e) {
-      _addSystemMessage('❌ Failed to list files: $e');
-    }
-  }
-
-  Future<void> _showRecentCommits() async {
-    try {
-      final commits = await _githubService!.getRecentCommits(count: 5);
-      final commitList = commits.map((c) =>
-      '• **${c['commit']['message']}**\n  by ${c['commit']['author']['name']} (`${c['sha'].substring(0, 7)}`)'
-      ).join('\n\n');
-      _addSystemMessage('📝 **Recent Commits:**\n\n$commitList');
-    } catch (e) {
-      _addSystemMessage('❌ Failed to get recent commits: $e');
-    }
-  }
-
-  // ============================================================================
-  // WRITE OPERATIONS (Enhanced)
-  // ============================================================================
-
-  Future<void> _createFileInteractive(String filename) async {
-    if (!_githubService!.canWrite) {
-      _addSystemMessage('❌ GitHub token with write permissions required for file creation.');
-      return;
-    }
-
-    try {
-      // Check if file exists
-      final exists = await _githubService!.fileExists(filename);
-      if (exists) {
-        _addSystemMessage('⚠️ **File already exists:** `$filename`\n\nUse `/edit` to modify existing files.');
-        return;
-      }
-
-      _addSystemMessage('''
-📝 **Ready to create:** `$filename`
-
-**Next step:** Describe what you want in this file. For example:
-• "Create a simple Flutter widget with a button"
-• "Make a utility function for string validation"
-• "Create a data model class for User"
-
-I'll generate the code and automatically commit it to GitHub!
-''');
-
-      // Store the pending filename for the next AI response
-      _pendingChanges[filename] = 'CREATE_PENDING';
-      debugPrint('📋 Added $filename to pending changes (CREATE_PENDING)');
-
-    } catch (e) {
-      _addSystemMessage('❌ Failed to prepare file creation: $e');
-    }
-  }
-
-  Future<void> _editFileInteractive(String filename) async {
-    if (!_githubService!.canWrite) {
-      _addSystemMessage('❌ GitHub token with write permissions required for file editing.');
-      return;
-    }
-
-    try {
-      // Read current file content
-      final content = await _githubService!.readFile(filename);
-
-      _addSystemMessage('''
-✏️ **Ready to edit:** `$filename`
-
-**Current content:**
-```dart
-$content
-```
-
-**Next step:** Describe the changes you want to make. For example:
-• "Add error handling to the main method"
-• "Refactor this code to use async/await"
-• "Add a new method called calculateTotal"
-
-I'll modify the code and automatically commit the changes!
-''');
-
-      // Store the current content for modification
-      _pendingChanges[filename] = 'UPDATE_PENDING';
-      debugPrint('📋 Added $filename to pending changes (UPDATE_PENDING)');
-
-    } catch (e) {
-      _addSystemMessage('❌ Failed to read file for editing: $e');
-    }
-  }
-
-  Future<void> _writeFileInteractive(String filename) async {
-    if (!_githubService!.canWrite) {
-      _addSystemMessage('❌ GitHub token with write permissions required for file operations.');
-      return;
-    }
-
-    try {
-      final exists = await _githubService!.fileExists(filename);
-      final action = exists ? 'update' : 'create';
-
-      _addSystemMessage('''
-📝 **Ready to $action:** `$filename`
-
-**Next step:** Provide the complete file content in your next message.
-
-I'll $action the file with your specified content and commit it automatically.
-''');
-
-      // Mark for write operation
-      _pendingChanges[filename] = exists ? 'UPDATE_PENDING' : 'CREATE_PENDING';
-      debugPrint('📋 Added $filename to pending changes (${exists ? 'UPDATE_PENDING' : 'CREATE_PENDING'})');
-
-    } catch (e) {
-      _addSystemMessage('❌ Failed to prepare file operation: $e');
-    }
-  }
-
-  Future<void> _deleteFileInteractive(String filename) async {
-    if (!_githubService!.canWrite) {
-      _addSystemMessage('❌ GitHub token with write permissions required for file deletion.');
-      return;
-    }
-
-    try {
-      // Check if file exists
-      final exists = await _githubService!.fileExists(filename);
-      if (!exists) {
-        _addSystemMessage('❌ File not found: `$filename`');
-        return;
-      }
-
-      // Delete the file immediately (no AI interaction needed)
-      final result = await _githubService!.deleteFile(
-        filePath: filename,
-        commitMessage: 'Delete $filename via Morfork AI',
+    // Add project awareness prompt at the beginning
+    if (_projectContextLoaded && allMessages.isNotEmpty) {
+      final contextPrompt = ChatMessage(
+        content: '''You are an AI assistant with full awareness of the ${_githubService.repo} codebase. You have access to the project structure and ${_loadedFiles.length} key files. Use this context to provide specific, actionable advice about the code. When discussing code, reference specific files and functions you can see.''',
+        isUser: false,
+        timestamp: DateTime.now(),
       );
-
-      _addSystemMessage('''
-🗑️ **Successfully deleted:** `$filename`
-
-**Commit:** ${result.commitMessage}
-**SHA:** `${result.commitSha?.substring(0, 7) ?? 'N/A'}`
-''');
-
-    } catch (e) {
-      _addSystemMessage('❌ Failed to delete file: $e');
+      allMessages.insert(0, contextPrompt);
     }
+
+    return allMessages;
   }
 
-  Future<void> _showPendingChanges() async {
-    if (_pendingChanges.isEmpty) {
-      _addSystemMessage('📋 No pending changes.');
-      return;
-    }
+  // Clear conversation
+  Future<void> clearConversation() async {
+    _messages.clear();
+    _projectContextLoaded = false;
+    _loadedFiles.clear();
 
-    final buffer = StringBuffer();
-    buffer.writeln('📋 **Pending Changes:**\n');
+    // Use actual database method
+    await _databaseHelper.clearMessages();
 
-    for (final entry in _pendingChanges.entries) {
-      final filename = entry.key;
-      final status = entry.value;
+    notifyListeners();
+  }
 
-      if (status == 'CREATE_PENDING') {
-        buffer.writeln('📝 **CREATE:** `$filename`');
-      } else if (status == 'UPDATE_PENDING') {
-        buffer.writeln('✏️ **UPDATE:** `$filename`');
-      } else {
-        buffer.writeln('📄 **MODIFY:** `$filename`');
+  // Private methods
+  void _addMessage(ConversationMessage message) {
+    _messages.add(message);
+    _saveMessage(message);
+    notifyListeners();
+  }
+
+  void _setLoading(bool loading) {
+    _isLoading = loading;
+    notifyListeners();
+  }
+
+  Future<void> _saveMessage(ConversationMessage message) async {
+    try {
+      // Use actual database method with adapter name
+      final adapterName = _currentAdapter?.name ?? 'Unknown';
+      await _databaseHelper.insertMessage(message, adapterName);
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error saving message: $e');
       }
     }
-
-    _addSystemMessage(buffer.toString());
   }
 
-  Future<void> _showGitHubStatus() async {
+  Future<void> _loadConversationHistory() async {
     try {
-      final canWrite = _githubService!.canWrite;
-      final hasWritePerms = await _githubService!.testWritePermissions();
-      final repoInfo = await _githubService!.getRepoInfo();
-
-      _addSystemMessage('''
-📊 **GitHub Status:**
-
-**Repository:** `${repoInfo['full_name']}`
-**Default Branch:** `${repoInfo['default_branch']}`
-**Write Token:** ${canWrite ? '✅ Configured' : '❌ Missing'}
-**Write Permissions:** ${hasWritePerms ? '✅ Verified' : '❌ No push access'}
-**Pending Changes:** ${_pendingChanges.length}
-
-${!canWrite ? '\n⚠️ Configure GitHub token for write operations.' : ''}
-${canWrite && !hasWritePerms ? '\n⚠️ Token lacks push permissions to this repository.' : ''}
-''');
-
-    } catch (e) {
-      _addSystemMessage('❌ Failed to get GitHub status: $e');
-    }
-  }
-
-  void _showGitHubHelp() {
-    _addSystemMessage('''
-🔧 **GitHub Commands:**
-
-**📖 READ OPERATIONS:**
-• `/read <filename>` - Read a file from the repository
-• `/structure` - Show the project file structure  
-• `/files [path]` - List files in a directory
-• `/commits` - Show recent commits
-
-**✏️ WRITE OPERATIONS:**
-• `/create <filename>` - Create a new file with AI assistance
-• `/edit <filename>` - Modify an existing file with AI
-• `/write <filename>` - Create or update a file 
-• `/delete <filename>` - Delete a file from repository
-
-**🔧 UTILITY:**
-• `/diff` - Show pending changes
-• `/status` - Show GitHub connection status
-• `/help` - Show this help message
-
-**Examples:**
-• `/read lib/main.dart`
-• `/create lib/utils/helper.dart`
-• `/edit pubspec.yaml`
-• `/structure`
-''');
-  }
-
-  String _buildFileTree(List<GitHubFile> files, [String prefix = '']) {
-    final buffer = StringBuffer();
-    for (int i = 0; i < files.length; i++) {
-      final file = files[i];
-      final isLast = i == files.length - 1;
-      final connector = isLast ? '└── ' : '├── ';
-      final icon = file.isDirectory ? '📁' : '📄';
-      buffer.writeln('$prefix$connector$icon ${file.name}');
-    }
-    return buffer.toString();
-  }
-
-  // ============================================================================
-  // UTILITY METHODS
-  // ============================================================================
-
-  Future<void> clearConversation() async {
-    try {
-      await _dbHelper.clearMessages();
+      // Use actual database method
+      final loadedMessages = await _databaseHelper.loadMessages();
       _messages.clear();
-      _pendingChanges.clear();
-      _error = null;
+      _messages.addAll(loadedMessages);
+
+      // Rebuild loaded files from message content (since metadata isn't in your schema)
+      for (final message in _messages) {
+        if (message.text.startsWith('🔄 Auto-loaded ') || message.text.startsWith('📄 Auto-loaded ')) {
+          // Extract filename from auto-load messages
+          final match = RegExp(r'Auto-loaded ([^\s:]+)').firstMatch(message.text);
+          if (match != null) {
+            _loadedFiles.add(match.group(1)!);
+          }
+        }
+        if (message.text.contains('🎯 Auto-loaded project context')) {
+          _projectContextLoaded = true;
+        }
+      }
+
       notifyListeners();
     } catch (e) {
-      _error = 'Failed to clear conversation: $e';
-      notifyListeners();
+      if (kDebugMode) {
+        print('Error loading conversation history: $e');
+      }
     }
   }
 
-  Future<int> getMessageCount() async {
-    try {
-      return await _dbHelper.getMessageCount();
-    } catch (e) {
-      debugPrint('Failed to get message count: $e');
-      return 0;
-    }
-  }
-
-  Future<void> cleanupOldMessages(int daysToKeep) async {
-    try {
-      await _dbHelper.deleteOldMessages(daysToKeep);
-      _isLoaded = false;
-      await loadConversationHistory();
-    } catch (e) {
-      _error = 'Failed to cleanup old messages: $e';
-      notifyListeners();
-    }
-  }
-
-  @override
-  void dispose() {
-    _currentAdapter?.dispose();
-    _dbHelper.close();
+  // Dispose
+  Future<void> dispose() async {
+    await _currentAdapter?.dispose();
     super.dispose();
   }
 }

@@ -1,436 +1,337 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-/// Enhanced service for reading AND writing files to GitHub
-/// Supports full development workflow with AI code generation
+/// GitHub service for repository operations
+/// Handles both read and write operations to GitHub repositories
 class GitHubService {
-  final String _owner;
-  final String _repo;
-  final String? _token;
-  final String _baseUrl = 'https://api.github.com';
+  static GitHubService? _instance;
+  String? _owner;
+  String? _repo;
+  String? _token;
+  String get _baseUrl => 'https://api.github.com';
 
-  GitHubService({
-    required String owner,
-    required String repo,
-    String? token,
-  }) : _owner = owner, _repo = repo, _token = token;
+  GitHubService._();
 
-  /// Public getters for repository information
-  String get owner => _owner;
-  String get repo => _repo;
-  String? get token => _token;
+  // Add constructor for backward compatibility
+  factory GitHubService({String? owner, String? repo, String? token}) {
+    final service = GitHubService.instance;
+    if (owner != null && repo != null) {
+      service.configure(owner: owner, repo: repo, token: token);
+    }
+    return service;
+  }
 
-  /// Get headers for GitHub API requests
+  static GitHubService get instance {
+    _instance ??= GitHubService._();
+    return _instance!;
+  }
+
+  // Public getters for repository info
+  String get owner => _owner ?? '';
+  String get repo => _repo ?? '';
+  bool get isConfigured => _owner != null && _repo != null;
+  bool get canWrite => _token != null && _token!.isNotEmpty;
+
   Map<String, String> get _headers {
     final headers = {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'Morfork-App',
+      'User-Agent': 'Morfork-MVF/1.0',
     };
-
-    if (_token != null && _token!.isNotEmpty) {
+    if (_token != null) {
       headers['Authorization'] = 'token $_token';
     }
-
     return headers;
   }
 
-  /// Check if token has write permissions
-  bool get canWrite => _token != null && _token!.isNotEmpty;
-
-  // ============================================================================
-  // READ OPERATIONS (Existing functionality preserved)
-  // ============================================================================
-
-  /// Read a file from the repository
-  Future<String> readFile(String filePath) async {
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$filePath');
-
-    try {
-      final response = await http.get(url, headers: _headers);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        // GitHub returns base64 encoded content
-        if (data['content'] != null) {
-          final base64Content = data['content'].replaceAll('\n', '');
-          final decodedBytes = base64Decode(base64Content);
-          return utf8.decode(decodedBytes);
-        } else {
-          throw Exception('No content found in file');
-        }
-      } else if (response.statusCode == 404) {
-        throw Exception('File not found: $filePath');
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to read file from GitHub: $e');
-    }
-  }
-
-  /// Get repository file tree
-  Future<List<GitHubFile>> getFileTree({String? path}) async {
-    final treePath = path ?? '';
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$treePath');
-
-    try {
-      final response = await http.get(url, headers: _headers);
-
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.map((item) => GitHubFile.fromJson(item)).toList();
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to get file tree: $e');
-    }
-  }
-
-  /// Get repository information
-  Future<Map<String, dynamic>> getRepoInfo() async {
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo');
-
-    try {
-      final response = await http.get(url, headers: _headers);
-
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to get repository info: $e');
-    }
-  }
-
-  /// Get recent commits
-  Future<List<Map<String, dynamic>>> getRecentCommits({int count = 10}) async {
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/commits?per_page=$count');
-
-    try {
-      final response = await http.get(url, headers: _headers);
-
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.cast<Map<String, dynamic>>();
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to get recent commits: $e');
-    }
-  }
-
-  // ============================================================================
-  // WRITE OPERATIONS (New functionality)
-  // ============================================================================
-
-  /// Create a new file in the repository
-  Future<GitHubWriteResult> createFile({
-    required String filePath,
-    required String content,
-    required String commitMessage,
-    String? branch,
+  /// Configure GitHub repository
+  Future<bool> configure({
+    required String owner,
+    required String repo,
+    String? token,
   }) async {
-    if (!canWrite) {
-      throw Exception('GitHub token required for write operations');
+    _owner = owner;
+    _repo = repo;
+    _token = token;
+
+    if (token != null && token.isNotEmpty) {
+      return await testConnection();
     }
-
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$filePath');
-
-    // Encode content to base64
-    final encodedContent = base64Encode(utf8.encode(content));
-
-    final body = {
-      'message': commitMessage,
-      'content': encodedContent,
-    };
-
-    if (branch != null) {
-      body['branch'] = branch;
-    }
-
-    try {
-      final response = await http.put(
-        url,
-        headers: _headers,
-        body: jsonEncode(body),
-      );
-
-      if (response.statusCode == 201) {
-        final data = jsonDecode(response.body);
-        return GitHubWriteResult.fromJson(data);
-      } else if (response.statusCode == 422) {
-        throw Exception('File already exists: $filePath');
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to create file: $e');
-    }
+    return true;
   }
 
-  /// Update an existing file in the repository
-  Future<GitHubWriteResult> updateFile({
-    required String filePath,
-    required String content,
-    required String commitMessage,
-    String? branch,
-  }) async {
-    if (!canWrite) {
-      throw Exception('GitHub token required for write operations');
-    }
-
-    // First, get the current file to retrieve its SHA
-    final currentFile = await _getFileDetails(filePath);
-
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$filePath');
-
-    // Encode content to base64
-    final encodedContent = base64Encode(utf8.encode(content));
-
-    final body = {
-      'message': commitMessage,
-      'content': encodedContent,
-      'sha': currentFile['sha'],
-    };
-
-    if (branch != null) {
-      body['branch'] = branch;
-    }
-
-    try {
-      final response = await http.put(
-        url,
-        headers: _headers,
-        body: jsonEncode(body),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return GitHubWriteResult.fromJson(data);
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to update file: $e');
-    }
-  }
-
-  /// Delete a file from the repository
-  Future<GitHubWriteResult> deleteFile({
-    required String filePath,
-    required String commitMessage,
-    String? branch,
-  }) async {
-    if (!canWrite) {
-      throw Exception('GitHub token required for write operations');
-    }
-
-    // First, get the current file to retrieve its SHA
-    final currentFile = await _getFileDetails(filePath);
-
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$filePath');
-
-    final body = {
-      'message': commitMessage,
-      'sha': currentFile['sha'],
-    };
-
-    if (branch != null) {
-      body['branch'] = branch;
-    }
-
-    try {
-      final response = await http.delete(
-        url,
-        headers: _headers,
-        body: jsonEncode(body),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return GitHubWriteResult.fromJson(data);
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to delete file: $e');
-    }
-  }
-
-  /// Check if a file exists in the repository
-  Future<bool> fileExists(String filePath) async {
-    try {
-      await readFile(filePath);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /// Get file details including SHA (needed for updates)
-  Future<Map<String, dynamic>> _getFileDetails(String filePath) async {
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$filePath');
-
-    try {
-      final response = await http.get(url, headers: _headers);
-
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      } else if (response.statusCode == 404) {
-        throw Exception('File not found: $filePath');
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to get file details: $e');
-    }
-  }
-
-  /// Create or update a file (smart operation)
-  Future<GitHubWriteResult> writeFile({
-    required String filePath,
-    required String content,
-    required String commitMessage,
-    String? branch,
-  }) async {
-    final exists = await fileExists(filePath);
-
-    if (exists) {
-      return await updateFile(
-        filePath: filePath,
-        content: content,
-        commitMessage: commitMessage,
-        branch: branch,
-      );
-    } else {
-      return await createFile(
-        filePath: filePath,
-        content: content,
-        commitMessage: commitMessage,
-        branch: branch,
-      );
-    }
-  }
-
-  /// Get the default branch of the repository
-  Future<String> getDefaultBranch() async {
-    final repoInfo = await getRepoInfo();
-    return repoInfo['default_branch'] ?? 'main';
-  }
-
-  /// List all branches
-  Future<List<String>> getBranches() async {
-    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/branches');
-
-    try {
-      final response = await http.get(url, headers: _headers);
-
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.map((branch) => branch['name'] as String).toList();
-      } else {
-        throw Exception('GitHub API error: ${response.statusCode} - ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Failed to get branches: $e');
-    }
-  }
-
-  /// Check if repository is accessible
+  /// Test GitHub connection
   Future<bool> testConnection() async {
+    if (!isConfigured) return false;
+
     try {
-      await getRepoInfo();
-      return true;
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo');
+      final response = await http.get(url, headers: _headers);
+      return response.statusCode == 200;
     } catch (e) {
       return false;
     }
   }
 
-  /// Test write permissions by attempting a dry-run write operation
+  /// Test write permissions
   Future<bool> testWritePermissions() async {
-    if (!canWrite) return false;
+    if (!canWrite || !isConfigured) return false;
 
     try {
-      // For repositories you own or have write access to, test by checking if we can
-      // get repository info with authentication (simple but effective test)
       final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo');
       final response = await http.get(url, headers: _headers);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-
-        // If we have explicit permissions info, use it
-        if (data['permissions'] != null) {
-          return data['permissions']['push'] == true;
-        }
-
-        // Otherwise, if we're the owner or can see private repo info, we likely have write access
-        // This is a reasonable assumption for personal repos
-        return data['private'] != null; // Can see privacy status = authenticated properly
+        // If we can see private repo info, we likely have write access
+        return data['private'] != null || data['permissions']?['push'] == true;
       }
-
       return false;
     } catch (e) {
-      // If authentication fails, definitely no write permissions
       return false;
     }
   }
-}
 
-/// Represents a file or directory in GitHub
-class GitHubFile {
-  final String name;
-  final String path;
-  final String type; // 'file' or 'dir'
-  final int size;
-  final String downloadUrl;
+  /// Get repository structure
+  Future<String> getRepositoryStructure() async {
+    if (!isConfigured) return 'GitHub not configured';
 
-  GitHubFile({
-    required this.name,
-    required this.path,
-    required this.type,
-    required this.size,
-    required this.downloadUrl,
-  });
-
-  factory GitHubFile.fromJson(Map<String, dynamic> json) {
-    return GitHubFile(
-      name: json['name'] ?? '',
-      path: json['path'] ?? '',
-      type: json['type'] ?? 'file',
-      size: json['size'] ?? 0,
-      downloadUrl: json['download_url'] ?? '',
-    );
+    try {
+      final structure = await _getDirectoryStructure('');
+      return _formatStructure(structure);
+    } catch (e) {
+      return 'Error getting repository structure: $e';
+    }
   }
 
-  bool get isFile => type == 'file';
-  bool get isDirectory => type == 'dir';
-}
+  /// Get file content
+  Future<String> getFileContent(String path) async {
+    if (!isConfigured) return 'GitHub not configured';
 
-/// Represents the result of a write operation to GitHub
-class GitHubWriteResult {
-  final String sha;
-  final String commitMessage;
-  final String? commitSha;
-  final String? htmlUrl;
+    try {
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$path');
+      final response = await http.get(url, headers: _headers);
 
-  GitHubWriteResult({
-    required this.sha,
-    required this.commitMessage,
-    this.commitSha,
-    this.htmlUrl,
-  });
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['content'] != null) {
+          return utf8.decode(base64Decode(data['content'].replaceAll('\n', '')));
+        }
+      }
+      return 'File not found or error reading file';
+    } catch (e) {
+      return 'Error reading file: $e';
+    }
+  }
 
-  factory GitHubWriteResult.fromJson(Map<String, dynamic> json) {
-    return GitHubWriteResult(
-      sha: json['content']?['sha'] ?? json['sha'] ?? '',
-      commitMessage: json['commit']?['message'] ?? '',
-      commitSha: json['commit']?['sha'],
-      htmlUrl: json['content']?['html_url'] ?? json['html_url'],
-    );
+  /// List files in directory
+  Future<String> listFiles(String path) async {
+    if (!isConfigured) return 'GitHub not configured';
+
+    try {
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$path');
+      final response = await http.get(url, headers: _headers);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as List;
+        final files = data.map((item) => item['name']).join('\n');
+        return files;
+      }
+      return 'Directory not found';
+    } catch (e) {
+      return 'Error listing files: $e';
+    }
+  }
+
+  /// Get recent commits
+  Future<String> getRecentCommits({int count = 10}) async {
+    if (!isConfigured) return 'GitHub not configured';
+
+    try {
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/commits?per_page=$count');
+      final response = await http.get(url, headers: _headers);
+
+      if (response.statusCode == 200) {
+        final commits = jsonDecode(response.body) as List;
+        return commits.map((commit) {
+          final message = commit['commit']['message'];
+          final author = commit['commit']['author']['name'];
+          final date = commit['commit']['author']['date'];
+          final sha = commit['sha'].substring(0, 7);
+          return '$sha - $message ($author, $date)';
+        }).join('\n');
+      }
+      return 'Error getting commits';
+    } catch (e) {
+      return 'Error getting commits: $e';
+    }
+  }
+
+  /// Create or update file
+  Future<Map<String, dynamic>> createOrUpdateFile({
+    required String path,
+    required String content,
+    required String message,
+    String? sha,
+  }) async {
+    if (!canWrite || !isConfigured) {
+      return {'success': false, 'error': 'GitHub write not configured'};
+    }
+
+    try {
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$path');
+      final body = {
+        'message': message,
+        'content': base64Encode(utf8.encode(content)),
+      };
+
+      if (sha != null) {
+        body['sha'] = sha;
+      }
+
+      final response = await http.put(
+        url,
+        headers: {
+          ..._headers,
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = jsonDecode(response.body);
+        return {
+          'success': true,
+          'sha': data['content']['sha'],
+          'url': data['content']['html_url'],
+          'message': 'File ${sha != null ? 'updated' : 'created'} successfully',
+        };
+      } else {
+        return {'success': false, 'error': 'GitHub API error: ${response.statusCode}'};
+      }
+    } catch (e) {
+      return {'success': false, 'error': 'Error creating/updating file: $e'};
+    }
+  }
+
+  /// Delete file
+  Future<Map<String, dynamic>> deleteFile({
+    required String path,
+    required String message,
+    required String sha,
+  }) async {
+    if (!canWrite || !isConfigured) {
+      return {'success': false, 'error': 'GitHub write not configured'};
+    }
+
+    try {
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$path');
+      final body = {
+        'message': message,
+        'sha': sha,
+      };
+
+      final response = await http.delete(
+        url,
+        headers: {
+          ..._headers,
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode == 200) {
+        return {'success': true, 'message': 'File deleted successfully'};
+      } else {
+        return {'success': false, 'error': 'GitHub API error: ${response.statusCode}'};
+      }
+    } catch (e) {
+      return {'success': false, 'error': 'Error deleting file: $e'};
+    }
+  }
+
+  /// Get file SHA (needed for updates)
+  Future<String?> getFileSha(String path) async {
+    if (!isConfigured) return null;
+
+    try {
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$path');
+      final response = await http.get(url, headers: _headers);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data['sha'];
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Check if file exists
+  Future<bool> fileExists(String path) async {
+    if (!isConfigured) return false;
+
+    try {
+      final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$path');
+      final response = await http.get(url, headers: _headers);
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Get GitHub status
+  Map<String, dynamic> getStatus() {
+    return {
+      'configured': isConfigured,
+      'repository': isConfigured ? '$_owner/$_repo' : 'Not configured',
+      'writeToken': canWrite ? 'Configured' : 'Missing',
+      'writePermissions': 'Unknown', // Will be checked async
+    };
+  }
+
+  // Helper methods
+  Future<List<Map<String, dynamic>>> _getDirectoryStructure(String path) async {
+    final url = Uri.parse('$_baseUrl/repos/$_owner/$_repo/contents/$path');
+    final response = await http.get(url, headers: _headers);
+
+    if (response.statusCode != 200) return [];
+
+    final items = jsonDecode(response.body) as List;
+    final structure = <Map<String, dynamic>>[];
+
+    for (final item in items) {
+      final entry = {
+        'name': item['name'],
+        'type': item['type'],
+        'path': item['path'],
+      };
+
+      if (item['type'] == 'dir') {
+        entry['children'] = await _getDirectoryStructure(item['path']);
+      }
+
+      structure.add(entry);
+    }
+
+    return structure;
+  }
+
+  String _formatStructure(List<Map<String, dynamic>> structure, [String indent = '']) {
+    final buffer = StringBuffer();
+
+    for (final item in structure) {
+      final name = item['name'];
+      final type = item['type'];
+      final icon = type == 'dir' ? '📁' : '📄';
+
+      buffer.writeln('$indent$icon $name');
+
+      if (type == 'dir' && item['children'] != null) {
+        buffer.write(_formatStructure(item['children'], '$indent  '));
+      }
+    }
+
+    return buffer.toString();
   }
 }

@@ -40,7 +40,6 @@ class ClaudeAdapter implements AIAdapter {
     }
 
     final url = Uri.parse('$_baseUrl/messages');
-
     final headers = {
       'Content-Type': 'application/json',
       'x-api-key': _apiKey,
@@ -68,7 +67,6 @@ class ClaudeAdapter implements AIAdapter {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-
         if (data['content'] != null && data['content'].isNotEmpty) {
           final content = data['content'][0]['text'];
           return content ?? 'No response from Claude';
