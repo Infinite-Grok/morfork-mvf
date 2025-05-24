@@ -14,8 +14,10 @@ dependencies:
   provider: ^6.1.2
   http: ^1.2.2
   sqflite: ^2.4.1
+  sqflite_common_ffi_web: ^0.4.5+1  # Web SQLite support
   path: ^1.9.1
   flutter_secure_storage: ^9.2.2
+  url_launcher: ^6.3.1  # For web-specific URL handling
 
 dev_dependencies:
   flutter_test:

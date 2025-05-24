@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'services/conversation_service.dart';
 import 'services/api_key_service.dart';
@@ -316,6 +317,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
           repo: repo,
           token: token.isNotEmpty ? token : null,
         );
+
+        // CRITICAL FIX: Re-initialize GitHub service in ConversationService
+        await _conversationService.reinitializeGitHub();
 
         // Test the connection
         final githubService = GitHubService(
@@ -647,7 +651,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         controller: _githubTokenController,
                         decoration: const InputDecoration(
                           labelText: 'GitHub Token (Optional)',
-                          hintText: 'For private repositories',
+                          hintText: 'For private repositories and write access',
                           border: OutlineInputBorder(),
                         ),
                         obscureText: true,
@@ -781,44 +785,91 @@ class MessageBubble extends StatelessWidget {
 
   const MessageBubble({super.key, required this.message});
 
+  void _copyMessage(BuildContext context) {
+    Clipboard.setData(ClipboardData(text: message.text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Message copied to clipboard'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        margin: EdgeInsets.only(
+          bottom: MediaQuery.of(context).size.height * 0.15,
+          left: 16,
+          right: 16,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Align(
       alignment: message.isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4.0),
-        padding: const EdgeInsets.all(12.0),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.8,
-        ),
-        decoration: BoxDecoration(
-          color: message.isUser
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(16.0),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              message.text,
-              style: TextStyle(
-                color: message.isUser
-                    ? Theme.of(context).colorScheme.onPrimary
-                    : Theme.of(context).colorScheme.onSurface,
+      child: GestureDetector(
+        onLongPress: () => _copyMessage(context),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4.0),
+          padding: const EdgeInsets.all(12.0),
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.8,
+          ),
+          decoration: BoxDecoration(
+            color: message.isUser
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(16.0),
+          ),
+          child: Stack(
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    message.text,
+                    style: TextStyle(
+                      color: message.isUser
+                          ? Theme.of(context).colorScheme.onPrimary
+                          : Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '${message.timestamp.hour}:${message.timestamp.minute.toString().padLeft(2, '0')}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: message.isUser
+                              ? Theme.of(context).colorScheme.onPrimary.withValues(alpha: 0.7)
+                              : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(
+                        Icons.copy,
+                        size: 12,
+                        color: message.isUser
+                            ? Theme.of(context).colorScheme.onPrimary.withValues(alpha: 0.5)
+                            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '${message.timestamp.hour}:${message.timestamp.minute.toString().padLeft(2, '0')}',
-              style: TextStyle(
-                fontSize: 12,
-                color: message.isUser
-                    ? Theme.of(context).colorScheme.onPrimary.withValues(alpha: 0.7)
-                    : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+              // Invisible tap area for copy functionality
+              Positioned.fill(
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16.0),
+                    onTap: () => _copyMessage(context),
+                    child: Container(),
+                  ),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
